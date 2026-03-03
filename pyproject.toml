@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cockroachdb-analyzer"
+version = "0.1.0"
+description = "Modular diagnostic and performance analyzer for CockroachDB clusters"
+authors = [{name = "Virag Tripathi", email = "virag.tripathi@gmail.com"}]
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+dependencies = [
+    "click>=8.1",
+    "psycopg[binary]>=3.1",
+    "psycopg_pool>=3.1",
+    "requests>=2.31",
+    "tabulate>=0.9",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "responses>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-requests>=2.31",
+    "types-tabulate>=0.9",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+crdb-analyzer = "crdb_analyzer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["crdb_analyzer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade (modern Python syntax)
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "TCH",    # flake8-type-checking
+    "RUF",    # ruff-specific rules
+    "PTH",    # flake8-use-pathlib
+    "C4",     # flake8-comprehensions
+    "T20",    # flake8-print (catch stray prints)
+]
+ignore = [
+    "T201",   # allow click.echo (print-like) in CLI
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["crdb_analyzer"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+ignore_missing_imports = true
