@@ -17,6 +17,7 @@ Modular diagnostic and performance analyzer for CockroachDB clusters. Works with
 - **Node Hotspot** -- Deep-dive into why a specific node is running hot
 - **Rebalance Status** -- Check if cluster rebalancing is complete with per-node distribution diagnostics
 - **Job Status** -- Detect stuck GC jobs, coordinator imbalance, and failed jobs
+- **Statement Errors** -- Failing queries, retry errors, per-node failure distribution, contention correlation
 - **Snapshot / History / Compare** -- Save point-in-time snapshots and diff them later
 
 All commands support **table**, **JSON**, and **CSV** output formats.
@@ -110,6 +111,12 @@ crdb-analyzer rebalance-status --balance-threshold 10
 
 # Detect stuck GC jobs, coordinator imbalance, failed jobs
 crdb-analyzer job-status
+
+# Statement failures, retries, and contention errors (last 1h default)
+crdb-analyzer stmt-errors
+
+# Look back further
+crdb-analyzer stmt-errors --since 6h --limit 50
 ```
 
 ### Diagnosing a Hot Node
@@ -368,6 +375,7 @@ crdb-analyzer -v hot-ranges --limit 5
 | `node-hotspot`      | Diagnose why a specific node is running hot         |
 | `rebalance-status`  | Check if cluster rebalancing is complete            |
 | `job-status`        | Detect stuck GC jobs, coordinator imbalance         |
+| `stmt-errors`       | Failing queries, retries, contention errors         |
 | `snapshot`          | Capture point-in-time snapshot of any analysis      |
 | `history`           | Browse and view historical snapshots                |
 | `compare`           | Diff two snapshots side by side                     |
@@ -377,7 +385,7 @@ crdb-analyzer -v hot-ranges --limit 5
 
 ```
 crdb_analyzer/
-├── cli.py                 # Click CLI with 18 commands
+├── cli.py                 # Click CLI with 19 commands
 ├── config.py              # Config resolution (CLI > env > YAML file)
 ├── retry.py               # CockroachDB-aware retry with exponential backoff
 ├── clients/
@@ -396,7 +404,8 @@ crdb_analyzer/
 │   ├── cluster_health.py  # Cluster health overview
 │   ├── node_hotspot.py   # Per-node hotspot deep-dive
 │   ├── rebalance_status.py # Rebalance completion check
-│   └── job_status.py     # Stuck jobs, GC backlog, coordinator imbalance
+│   ├── job_status.py     # Stuck jobs, GC backlog, coordinator imbalance
+│   └── stmt_errors.py   # Statement failures, retries, contention
 ├── storage/
 │   ├── base.py            # Abstract snapshot store interface
 │   ├── sqlite_store.py    # SQLite backend (default, local)

@@ -9,6 +9,7 @@ from crdb_analyzer.analyzers.job_status import JobStatusAnalyzer
 from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
 from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
 from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
+from crdb_analyzer.analyzers.stmt_errors import StmtErrorsAnalyzer
 from crdb_analyzer.analyzers.stmt_fingerprints import StmtFingerprintAnalyzer
 
 
@@ -229,6 +230,41 @@ class TestJobStatusAnalyzer:
 
     def test_requires_sql(self):
         analyzer = JobStatusAnalyzer()
+        try:
+            analyzer.analyze()
+            raise AssertionError("Expected RuntimeError")
+        except RuntimeError:
+            pass
+
+
+class TestStmtErrorsAnalyzer:
+    def test_no_errors(self):
+        sql = _make_sql_client(execute_result=[])
+        analyzer = StmtErrorsAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10)
+        assert result["title"] == "Statement Errors"
+        assert result["summary"]["verdict"] == "No statement failures"
+        assert result["summary"]["total_failure_count"] == 0
+        assert len(result["sections"]) == 4
+
+    def test_with_failures(self):
+        sql = _make_sql_client(execute_result=[
+            {
+                "fingerprint_id": "abc123",
+                "query": "SELECT * FROM t",
+                "database": "mydb",
+                "failure_count": 10,
+                "total_count": 100,
+                "failure_pct": "10.0",
+                "aggregated_ts": "2026-01-01T00:00:00Z",
+            },
+        ])
+        analyzer = StmtErrorsAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10, since="6h")
+        assert "10 statement failures" in result["summary"]["verdict"]
+
+    def test_requires_sql(self):
+        analyzer = StmtErrorsAnalyzer()
         try:
             analyzer.analyze()
             raise AssertionError("Expected RuntimeError")

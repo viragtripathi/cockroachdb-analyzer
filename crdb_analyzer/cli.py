@@ -470,6 +470,41 @@ def job_status(ctx: click.Context, limit: int, save: bool) -> None:
         _cleanup(sql_client, http_client)
 
 
+@main.command("stmt-errors")
+@click.option("--limit", default=20, help="Max rows per section.")
+@click.option(
+    "--since", default="1h",
+    help="Time window for statement stats (e.g. 1h, 6h, 24h).",
+)
+@click.option("--save", is_flag=True)
+@click.pass_context
+def stmt_errors(
+    ctx: click.Context, limit: int, since: str, save: bool,
+) -> None:
+    """Analyze statement failures, retries, and contention errors.
+
+    Shows top failing queries, retry errors, per-node failure
+    distribution, and failing statements with high contention.
+    """
+    config = ctx.obj["config"]
+    sql_client, http_client = _build_clients(config)
+    try:
+        from crdb_analyzer.analyzers.stmt_errors import StmtErrorsAnalyzer
+
+        analyzer = StmtErrorsAnalyzer(
+            sql_client=sql_client, http_client=http_client,
+        )
+        results = analyzer.analyze(limit=limit, since=since)
+        click.echo(format_results(results, ctx.obj["format"]))
+        if save:
+            _save_snapshot(ctx, "stmt-errors", results)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        _cleanup(sql_client, http_client)
+
+
 # ---------------------------------------------------------------------------
 # Snapshot / history / compare commands
 # ---------------------------------------------------------------------------
@@ -480,6 +515,7 @@ def job_status(ctx: click.Context, limit: int, save: bool) -> None:
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance", "stmt-fingerprints",
     "cluster-health", "node-hotspot", "rebalance-status", "job-status",
+    "stmt-errors",
 ]))
 @click.option("--limit", default=50)
 @click.pass_context
@@ -616,7 +652,7 @@ _ALL_ANALYSES = [
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance",
     "stmt-fingerprints", "cluster-health", "node-hotspot",
-    "rebalance-status", "job-status",
+    "rebalance-status", "job-status", "stmt-errors",
 ]
 
 
@@ -831,6 +867,7 @@ def _run_analysis(
     from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
     from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
     from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
+    from crdb_analyzer.analyzers.stmt_errors import StmtErrorsAnalyzer
     from crdb_analyzer.analyzers.stmt_fingerprints import StmtFingerprintAnalyzer
     from crdb_analyzer.analyzers.table_stats import TableStatsAnalyzer
 
@@ -847,6 +884,7 @@ def _run_analysis(
         "node-hotspot": NodeHotspotAnalyzer,
         "rebalance-status": RebalanceStatusAnalyzer,
         "job-status": JobStatusAnalyzer,
+        "stmt-errors": StmtErrorsAnalyzer,
     }
     cls = analyzers[analysis]
     analyzer = cls(sql_client=sql_client, http_client=http_client)
