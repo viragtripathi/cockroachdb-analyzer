@@ -7,6 +7,7 @@ from crdb_analyzer.analyzers.contention import ContentionAnalyzer
 from crdb_analyzer.analyzers.index_usage import IndexUsageAnalyzer
 from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
 from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
+from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
 from crdb_analyzer.analyzers.stmt_fingerprints import StmtFingerprintAnalyzer
 
 
@@ -163,6 +164,38 @@ class TestNodeHotspotAnalyzer:
         analyzer = NodeHotspotAnalyzer()
         try:
             analyzer.analyze(node_id=1)
+            raise AssertionError("Expected RuntimeError")
+        except RuntimeError:
+            pass
+
+
+class TestRebalanceStatusAnalyzer:
+    def test_rebalancing_complete(self):
+        sql = _make_sql_client(execute_result=[
+            {"zone_id": 0, "sub_zone_id": 0, "under_replicated_ranges": 0,
+             "over_replicated_ranges": 0, "unavailable_ranges": 0,
+             "total_ranges": 100},
+        ])
+        analyzer = RebalanceStatusAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10)
+        assert result["title"] == "Rebalance Status"
+        assert len(result["sections"]) == 3
+        assert "verdict" in result["summary"]
+
+    def test_rebalancing_in_progress(self):
+        sql = _make_sql_client(execute_result=[
+            {"zone_id": 0, "sub_zone_id": 0, "under_replicated_ranges": 5,
+             "over_replicated_ranges": 2, "unavailable_ranges": 0,
+             "total_ranges": 100},
+        ])
+        analyzer = RebalanceStatusAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10)
+        assert result["summary"]["verdict"] == "REBALANCING IN PROGRESS"
+
+    def test_requires_sql(self):
+        analyzer = RebalanceStatusAnalyzer()
+        try:
+            analyzer.analyze()
             raise AssertionError("Expected RuntimeError")
         except RuntimeError:
             pass

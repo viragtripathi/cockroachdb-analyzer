@@ -98,6 +98,9 @@ crdb-analyzer cluster-health
 
 # Deep-dive: why is node 2 running hot?
 crdb-analyzer node-hotspot --node-id 2
+
+# Check if cluster rebalancing is complete
+crdb-analyzer rebalance-status
 ```
 
 ### Diagnosing a Hot Node
@@ -326,6 +329,7 @@ crdb-analyzer -v hot-ranges --limit 5
 | `stmt-fingerprints` | Slow queries, most executed, highest rows read      |
 | `cluster-health`    | Node liveness, capacity, version skew               |
 | `node-hotspot`      | Diagnose why a specific node is running hot         |
+| `rebalance-status`  | Check if cluster rebalancing is complete            |
 | `snapshot`          | Capture point-in-time snapshot of any analysis      |
 | `history`           | Browse and view historical snapshots                |
 | `compare`           | Diff two snapshots side by side                     |
@@ -352,7 +356,8 @@ crdb_analyzer/
 │   ├── lease_balance.py   # Replica/lease distribution
 │   ├── stmt_fingerprints.py # Statement fingerprint analysis
 │   ├── cluster_health.py  # Cluster health overview
-│   └── node_hotspot.py   # Per-node hotspot deep-dive
+│   ├── node_hotspot.py   # Per-node hotspot deep-dive
+│   └── rebalance_status.py # Rebalance completion check
 ├── storage/
 │   ├── base.py            # Abstract snapshot store interface
 │   ├── sqlite_store.py    # SQLite backend (default, local)

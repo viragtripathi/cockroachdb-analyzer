@@ -410,6 +410,33 @@ def node_hotspot(ctx: click.Context, node_id: int, limit: int, save: bool) -> No
         _cleanup(sql_client, http_client)
 
 
+@main.command("rebalance-status")
+@click.option("--limit", default=50, help="Number of rangelog events to check.")
+@click.option("--save", is_flag=True)
+@click.pass_context
+def rebalance_status(ctx: click.Context, limit: int, save: bool) -> None:
+    """Check whether cluster rebalancing is complete.
+
+    Examines replication stats, store balance, and recent rangelog
+    activity to determine if rebalancing is still in progress.
+    """
+    config = ctx.obj["config"]
+    sql_client, http_client = _build_clients(config)
+    try:
+        from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
+
+        analyzer = RebalanceStatusAnalyzer(sql_client=sql_client, http_client=http_client)
+        results = analyzer.analyze(limit=limit)
+        click.echo(format_results(results, ctx.obj["format"]))
+        if save:
+            _save_snapshot(ctx, "rebalance-status", results)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        _cleanup(sql_client, http_client)
+
+
 # ---------------------------------------------------------------------------
 # Snapshot / history / compare commands
 # ---------------------------------------------------------------------------
@@ -419,7 +446,7 @@ def node_hotspot(ctx: click.Context, node_id: int, limit: int, save: bool) -> No
 @click.argument("analysis", type=click.Choice([
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance", "stmt-fingerprints",
-    "cluster-health", "node-hotspot",
+    "cluster-health", "node-hotspot", "rebalance-status",
 ]))
 @click.option("--limit", default=50)
 @click.pass_context
@@ -556,6 +583,7 @@ _ALL_ANALYSES = [
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance",
     "stmt-fingerprints", "cluster-health", "node-hotspot",
+    "rebalance-status",
 ]
 
 
@@ -768,6 +796,7 @@ def _run_analysis(
     from crdb_analyzer.analyzers.index_usage import IndexUsageAnalyzer
     from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
     from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
+    from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
     from crdb_analyzer.analyzers.stmt_fingerprints import StmtFingerprintAnalyzer
     from crdb_analyzer.analyzers.table_stats import TableStatsAnalyzer
 
@@ -782,6 +811,7 @@ def _run_analysis(
         "stmt-fingerprints": StmtFingerprintAnalyzer,
         "cluster-health": ClusterHealthAnalyzer,
         "node-hotspot": NodeHotspotAnalyzer,
+        "rebalance-status": RebalanceStatusAnalyzer,
     }
     cls = analyzers[analysis]
     analyzer = cls(sql_client=sql_client, http_client=http_client)
