@@ -179,7 +179,7 @@ class TestRebalanceStatusAnalyzer:
         analyzer = RebalanceStatusAnalyzer(sql_client=sql)
         result = analyzer.analyze(limit=10)
         assert result["title"] == "Rebalance Status"
-        assert len(result["sections"]) == 3
+        assert len(result["sections"]) == 5
         assert "verdict" in result["summary"]
 
     def test_rebalancing_in_progress(self):
