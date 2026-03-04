@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 from crdb_analyzer.analyzers.cluster_health import ClusterHealthAnalyzer
 from crdb_analyzer.analyzers.contention import ContentionAnalyzer
 from crdb_analyzer.analyzers.index_usage import IndexUsageAnalyzer
+from crdb_analyzer.analyzers.job_status import JobStatusAnalyzer
 from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
 from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
 from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
@@ -194,6 +195,40 @@ class TestRebalanceStatusAnalyzer:
 
     def test_requires_sql(self):
         analyzer = RebalanceStatusAnalyzer()
+        try:
+            analyzer.analyze()
+            raise AssertionError("Expected RuntimeError")
+        except RuntimeError:
+            pass
+
+
+class TestJobStatusAnalyzer:
+    def test_healthy_jobs(self):
+        sql = _make_sql_client(execute_result=[])
+        analyzer = JobStatusAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10)
+        assert result["title"] == "Job Status"
+        assert result["summary"]["verdict"] == "ALL JOBS HEALTHY"
+        assert result["summary"]["stuck_gc_jobs"] == 0
+
+    def test_with_running_jobs(self):
+        sql = _make_sql_client(execute_result=[
+            {
+                "job_id": 105, "job_type": "UPDATE TABLE METADATA CACHE",
+                "description": "cache update", "status": "running",
+                "running_status": None,
+                "created": "2026-01-01T00:00:00Z",
+                "modified": "2026-01-01T00:00:00Z",
+                "fraction_completed": 0, "coordinator_id": 1,
+            },
+        ])
+        analyzer = JobStatusAnalyzer(sql_client=sql)
+        result = analyzer.analyze(limit=10)
+        assert result["title"] == "Job Status"
+        assert len(result["sections"]) == 5
+
+    def test_requires_sql(self):
+        analyzer = JobStatusAnalyzer()
         try:
             analyzer.analyze()
             raise AssertionError("Expected RuntimeError")

@@ -412,9 +412,15 @@ def node_hotspot(ctx: click.Context, node_id: int, limit: int, save: bool) -> No
 
 @main.command("rebalance-status")
 @click.option("--limit", default=50, help="Number of rangelog events to check.")
+@click.option(
+    "--balance-threshold", default=5.0, type=float,
+    help="Max allowed range-count spread %% across stores (default: 5.0).",
+)
 @click.option("--save", is_flag=True)
 @click.pass_context
-def rebalance_status(ctx: click.Context, limit: int, save: bool) -> None:
+def rebalance_status(
+    ctx: click.Context, limit: int, balance_threshold: float, save: bool,
+) -> None:
     """Check whether cluster rebalancing is complete.
 
     Examines replication stats, store balance, and recent rangelog
@@ -426,10 +432,37 @@ def rebalance_status(ctx: click.Context, limit: int, save: bool) -> None:
         from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
 
         analyzer = RebalanceStatusAnalyzer(sql_client=sql_client, http_client=http_client)
-        results = analyzer.analyze(limit=limit)
+        results = analyzer.analyze(limit=limit, balance_threshold=balance_threshold)
         click.echo(format_results(results, ctx.obj["format"]))
         if save:
             _save_snapshot(ctx, "rebalance-status", results)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        _cleanup(sql_client, http_client)
+
+
+@main.command("job-status")
+@click.option("--limit", default=50, help="Max failed/reverting jobs to show.")
+@click.option("--save", is_flag=True)
+@click.pass_context
+def job_status(ctx: click.Context, limit: int, save: bool) -> None:
+    """Detect stuck, long-running, or problematic CockroachDB jobs.
+
+    Checks for Schema Change GC backlog, coordinator imbalance,
+    failed jobs, and GC TTL configuration.
+    """
+    config = ctx.obj["config"]
+    sql_client, http_client = _build_clients(config)
+    try:
+        from crdb_analyzer.analyzers.job_status import JobStatusAnalyzer
+
+        analyzer = JobStatusAnalyzer(sql_client=sql_client, http_client=http_client)
+        results = analyzer.analyze(limit=limit)
+        click.echo(format_results(results, ctx.obj["format"]))
+        if save:
+            _save_snapshot(ctx, "job-status", results)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -446,7 +479,7 @@ def rebalance_status(ctx: click.Context, limit: int, save: bool) -> None:
 @click.argument("analysis", type=click.Choice([
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance", "stmt-fingerprints",
-    "cluster-health", "node-hotspot", "rebalance-status",
+    "cluster-health", "node-hotspot", "rebalance-status", "job-status",
 ]))
 @click.option("--limit", default=50)
 @click.pass_context
@@ -583,7 +616,7 @@ _ALL_ANALYSES = [
     "hot-ranges", "hot-nodes", "data-skew", "table-stats",
     "contention", "index-usage", "lease-balance",
     "stmt-fingerprints", "cluster-health", "node-hotspot",
-    "rebalance-status",
+    "rebalance-status", "job-status",
 ]
 
 
@@ -794,6 +827,7 @@ def _run_analysis(
     from crdb_analyzer.analyzers.hot_nodes import HotNodesAnalyzer
     from crdb_analyzer.analyzers.hot_ranges import HotRangesAnalyzer
     from crdb_analyzer.analyzers.index_usage import IndexUsageAnalyzer
+    from crdb_analyzer.analyzers.job_status import JobStatusAnalyzer
     from crdb_analyzer.analyzers.lease_balance import LeaseBalanceAnalyzer
     from crdb_analyzer.analyzers.node_hotspot import NodeHotspotAnalyzer
     from crdb_analyzer.analyzers.rebalance_status import RebalanceStatusAnalyzer
@@ -812,6 +846,7 @@ def _run_analysis(
         "cluster-health": ClusterHealthAnalyzer,
         "node-hotspot": NodeHotspotAnalyzer,
         "rebalance-status": RebalanceStatusAnalyzer,
+        "job-status": JobStatusAnalyzer,
     }
     cls = analyzers[analysis]
     analyzer = cls(sql_client=sql_client, http_client=http_client)

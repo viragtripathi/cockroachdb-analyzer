@@ -27,9 +27,12 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         if not self.sql:
             msg = "Rebalance status analysis requires a SQL connection."
             raise RuntimeError(msg)
-        return self._analyze(limit)
+        threshold = float(
+            kwargs.get("balance_threshold", _BALANCE_THRESHOLD_PCT),
+        )
+        return self._analyze(limit, threshold)
 
-    def _analyze(self, limit: int) -> dict[str, Any]:
+    def _analyze(self, limit: int, threshold: float) -> dict[str, Any]:
         assert self.sql is not None
         is_virtual = False
 
@@ -38,12 +41,18 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         if not store_balance:
             is_virtual = True
         recent_events = self._get_recent_rangelog(limit)
-        rebalance_rate = self._get_rebalance_rate_setting()
-        node_dist = self._get_node_range_distribution()
+        rebalance_rate = self._get_cluster_setting(
+            "kv.snapshot_rebalance.max_rate",
+        )
+        split_qps = self._get_cluster_setting(
+            "kv.range_split.load_qps_threshold",
+        )
+        range_size = self._get_range_max_bytes()
+        node_dist = self._get_node_range_distribution(threshold)
         rebalance_direction = self._get_rebalance_direction()
 
         verdict, reasons = self._compute_verdict(
-            repl_stats, store_balance, recent_events,
+            repl_stats, store_balance, recent_events, threshold,
         )
         if is_virtual:
             reasons.append(
@@ -97,7 +106,24 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
             "summary": {
                 "verdict": verdict,
                 "reasons": reasons,
-                "rebalance_rate_setting": rebalance_rate,
+                "cluster_settings": {
+                    f"kv.snapshot_rebalance.max_rate = {rebalance_rate}": (
+                        "Controls rebalance speed. "
+                        "To increase: SET CLUSTER SETTING "
+                        "kv.snapshot_rebalance.max_rate = '128 MiB';"
+                    ),
+                    f"kv.range_split.load_qps_threshold = {split_qps}": (
+                        "QPS at which a range is eligible for "
+                        "load-based splitting. "
+                        "To adjust: SET CLUSTER SETTING "
+                        "kv.range_split.load_qps_threshold = 2000;"
+                    ),
+                    f"range_max_bytes = {range_size}": (
+                        "Max range size before size-based splitting. "
+                        "To adjust: ALTER RANGE default CONFIGURE ZONE "
+                        "USING range_max_bytes = 268435456;"
+                    ),
+                },
             },
         }
 
@@ -220,7 +246,9 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 logger.warning("kv_store_status query failed", exc_info=True)
             return []
 
-    def _get_node_range_distribution(self) -> list[dict[str, Any]]:
+    def _get_node_range_distribution(
+        self, threshold: float = _BALANCE_THRESHOLD_PCT,
+    ) -> list[dict[str, Any]]:
         """Per-node breakdown of replicas by replication factor.
 
         Computes how many replicas each node holds for each configured
@@ -299,7 +327,7 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 status = "OK"
                 if expected > 0:
                     pct_off = abs(delta) / expected * 100
-                    if pct_off > _BALANCE_THRESHOLD_PCT:
+                    if pct_off > threshold:
                         status = "OVER" if delta > 0 else "UNDER"
 
                 result.append({
@@ -405,16 +433,30 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 logger.warning("rangelog query failed", exc_info=True)
             return []
 
-    def _get_rebalance_rate_setting(self) -> str:
+    def _get_cluster_setting(self, name: str) -> str:
         assert self.sql is not None
         try:
-            rows = self.sql.execute(
-                "SHOW CLUSTER SETTING kv.snapshot_rebalance.max_rate"
-            )
+            rows = self.sql.execute(f"SHOW CLUSTER SETTING {name}")
             if rows:
                 return str(next(iter(rows[0].values())))
         except Exception:
-            logger.debug("rebalance rate setting query failed", exc_info=True)
+            logger.debug("cluster setting %s query failed", name)
+        return "unknown"
+
+    def _get_range_max_bytes(self) -> str:
+        assert self.sql is not None
+        try:
+            rows = self.sql.execute(
+                "SHOW ZONE CONFIGURATION FOR RANGE default"
+            )
+            for r in rows:
+                raw = str(r.get("raw_config_sql", "") or "")
+                m = re.search(r"range_max_bytes\s*=\s*(\d+)", raw)
+                if m:
+                    mb = int(m.group(1)) / 1024 / 1024
+                    return f"{mb:.0f} MiB"
+        except Exception:
+            logger.debug("range_max_bytes query failed")
         return "unknown"
 
     # ------------------------------------------------------------------
@@ -426,6 +468,7 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         repl_stats: list[dict[str, Any]],
         store_balance: list[dict[str, Any]],
         recent_events: list[dict[str, Any]],
+        threshold: float = _BALANCE_THRESHOLD_PCT,
     ) -> tuple[str, list[str]]:
         """Return (verdict, reasons) based on the collected data."""
         reasons: list[str] = []
@@ -477,18 +520,18 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 min_rc = min(range_counts)
                 if avg_rc > 0:
                     spread_pct = (max_rc - min_rc) / avg_rc * 100
-                    if spread_pct > _BALANCE_THRESHOLD_PCT:
+                    if spread_pct > threshold:
                         all_clear = False
                         reasons.append(
                             f"Range count spread {spread_pct:.1f}% "
                             f"(max={max_rc}, min={min_rc}, "
                             f"avg={avg_rc:.0f}) "
-                            f"exceeds {_BALANCE_THRESHOLD_PCT}% threshold"
+                            f"exceeds {threshold}% threshold"
                         )
                     else:
                         reasons.append(
                             f"Range count spread {spread_pct:.1f}% "
-                            f"within {_BALANCE_THRESHOLD_PCT}% "
+                            f"within {threshold}% "
                             f"threshold (good)"
                         )
 

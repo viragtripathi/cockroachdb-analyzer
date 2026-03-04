@@ -14,6 +14,9 @@ Modular diagnostic and performance analyzer for CockroachDB clusters. Works with
 - **Lease Balance** -- Check replica/lease distribution across nodes
 - **Statement Fingerprints** -- Identify slowest queries, most executed, highest rows read
 - **Cluster Health** -- Node liveness, capacity, version skew detection
+- **Node Hotspot** -- Deep-dive into why a specific node is running hot
+- **Rebalance Status** -- Check if cluster rebalancing is complete with per-node distribution diagnostics
+- **Job Status** -- Detect stuck GC jobs, coordinator imbalance, and failed jobs
 - **Snapshot / History / Compare** -- Save point-in-time snapshots and diff them later
 
 All commands support **table**, **JSON**, and **CSV** output formats.
@@ -101,6 +104,12 @@ crdb-analyzer node-hotspot --node-id 2
 
 # Check if cluster rebalancing is complete
 crdb-analyzer rebalance-status
+
+# With a custom balance threshold (default: 5%)
+crdb-analyzer rebalance-status --balance-threshold 10
+
+# Detect stuck GC jobs, coordinator imbalance, failed jobs
+crdb-analyzer job-status
 ```
 
 ### Diagnosing a Hot Node
@@ -119,6 +128,34 @@ This shows:
 - **Store Capacity** -- disk usage across all nodes to spot hardware asymmetry
 - **Zone Configs** -- any lease preferences or constraints that could be pinning to this node
 - **Locality Match** -- whether the node's locality matches any zone config lease preferences
+
+### Checking Rebalance Status
+
+```bash
+crdb-analyzer rebalance-status
+```
+
+This checks:
+- **Replication Stats** -- under/over-replicated and unavailable ranges (must all be 0)
+- **Store Balance** -- range count spread across stores (configurable threshold, default 5%)
+- **Per-Node Range Distribution** -- expected vs actual replicas per node with RF breakdown, flags OVER/UNDER nodes
+- **Rebalance Direction** -- net add/remove voter events per store in the last hour
+- **Rangelog Activity** -- detects active `add_voter`/`remove_voter` pairs (rebalancing) vs `add_voter`-only (initial placement)
+- **Cluster Settings** -- shows current values and adjustment commands for `kv.snapshot_rebalance.max_rate`, `kv.range_split.load_qps_threshold`, and `range_max_bytes`
+
+Works on self-hosted and CockroachDB Cloud clusters (virtual clusters get a reduced view).
+
+### Detecting Stuck Jobs
+
+```bash
+crdb-analyzer job-status
+```
+
+This detects:
+- **Schema Change GC backlog** -- stuck "waiting for MVCC GC" jobs from repeated `TRUNCATE TABLE` operations that occupy dead ranges and inflate node storage
+- **Coordinator imbalance** -- one node coordinating disproportionately many jobs (adds CPU/IO load)
+- **Failed/reverting jobs** -- recent job failures with error details
+- **GC TTL configuration** -- shows `gc.ttlseconds` per zone with the exact `ALTER ... CONFIGURE ZONE` command to adjust it
 
 ### Getting Range IDs for range-details
 
@@ -330,6 +367,7 @@ crdb-analyzer -v hot-ranges --limit 5
 | `cluster-health`    | Node liveness, capacity, version skew               |
 | `node-hotspot`      | Diagnose why a specific node is running hot         |
 | `rebalance-status`  | Check if cluster rebalancing is complete            |
+| `job-status`        | Detect stuck GC jobs, coordinator imbalance         |
 | `snapshot`          | Capture point-in-time snapshot of any analysis      |
 | `history`           | Browse and view historical snapshots                |
 | `compare`           | Diff two snapshots side by side                     |
@@ -339,7 +377,7 @@ crdb-analyzer -v hot-ranges --limit 5
 
 ```
 crdb_analyzer/
-├── cli.py                 # Click CLI with 15 commands
+├── cli.py                 # Click CLI with 18 commands
 ├── config.py              # Config resolution (CLI > env > YAML file)
 ├── retry.py               # CockroachDB-aware retry with exponential backoff
 ├── clients/
@@ -357,7 +395,8 @@ crdb_analyzer/
 │   ├── stmt_fingerprints.py # Statement fingerprint analysis
 │   ├── cluster_health.py  # Cluster health overview
 │   ├── node_hotspot.py   # Per-node hotspot deep-dive
-│   └── rebalance_status.py # Rebalance completion check
+│   ├── rebalance_status.py # Rebalance completion check
+│   └── job_status.py     # Stuck jobs, GC backlog, coordinator imbalance
 ├── storage/
 │   ├── base.py            # Abstract snapshot store interface
 │   ├── sqlite_store.py    # SQLite backend (default, local)

@@ -42,7 +42,13 @@ def _format_table(results: dict[str, Any]) -> str:
     if summary := results.get("summary"):
         parts.append("\nSummary:")
         for k, v in summary.items():
-            parts.append(f"  {k}: {v}")
+            if isinstance(v, dict):
+                parts.append(f"  {k}:")
+                for setting, description in v.items():
+                    parts.append(f"    {setting}")
+                    parts.append(f"      {description}")
+            else:
+                parts.append(f"  {k}: {v}")
 
     return "\n".join(parts)
 
