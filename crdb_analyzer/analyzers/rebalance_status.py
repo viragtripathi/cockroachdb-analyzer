@@ -109,21 +109,36 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 "cluster_settings": {
                     f"kv.snapshot_rebalance.max_rate = {rebalance_rate}": (
                         "Controls rebalance speed. "
-                        "To increase: SET CLUSTER SETTING "
-                        "kv.snapshot_rebalance.max_rate = '128 MiB';"
+                        "To speed up: SET CLUSTER SETTING "
+                        "kv.snapshot_rebalance.max_rate = '256 MiB'; "
+                        "Default: '32 MiB'"
                     ),
                     f"kv.range_split.load_qps_threshold = {split_qps}": (
                         "QPS at which a range is eligible for "
                         "load-based splitting. "
                         "To adjust: SET CLUSTER SETTING "
-                        "kv.range_split.load_qps_threshold = 2000;"
+                        "kv.range_split.load_qps_threshold = 2000; "
+                        "Default: 2500"
                     ),
                     f"range_max_bytes = {range_size}": (
                         "Max range size before size-based splitting. "
                         "To adjust: ALTER RANGE default CONFIGURE ZONE "
-                        "USING range_max_bytes = 268435456;"
+                        "USING range_max_bytes = 268435456; "
+                        "Default: 536870912 (512 MiB)"
                     ),
                 },
+                "scale_test_tip": (
+                    "For scale tests: increase rebalance rate and lower "
+                    "GC TTL before testing to speed up rebalancing and "
+                    "dead data cleanup. Always restore production "
+                    "defaults after testing: "
+                    "SET CLUSTER SETTING "
+                    "kv.snapshot_rebalance.max_rate = '32 MiB'; "
+                    "SET CLUSTER SETTING "
+                    "kv.range_split.load_qps_threshold = 2500; "
+                    "ALTER RANGE default CONFIGURE ZONE USING "
+                    "gc.ttlseconds = 14400;"
+                ),
             },
         }
 
