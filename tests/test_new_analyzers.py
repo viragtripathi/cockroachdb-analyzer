@@ -181,7 +181,7 @@ class TestRebalanceStatusAnalyzer:
         analyzer = RebalanceStatusAnalyzer(sql_client=sql)
         result = analyzer.analyze(limit=10)
         assert result["title"] == "Rebalance Status"
-        assert len(result["sections"]) == 5
+        assert len(result["sections"]) == 6
         assert "verdict" in result["summary"]
 
     def test_rebalancing_in_progress(self):
@@ -201,6 +201,110 @@ class TestRebalanceStatusAnalyzer:
             raise AssertionError("Expected RuntimeError")
         except RuntimeError:
             pass
+
+    def test_az_aware_single_node_az_is_ok(self):
+        """Node 9 in AZ3 alone with RF=3 across 3 AZs must hold all
+        ranges -- the analyzer should report status=OK, not OVER."""
+        analyzer = RebalanceStatusAnalyzer(sql_client=MagicMock())
+        # With RF=3 across 3 AZs, each AZ gets ~(180*3/3)=180 replicas.
+        # AZ1 (2 nodes): 180/2 = 90 per node
+        # AZ2 (2 nodes): 180/2 = 90 per node
+        # AZ3 (1 node): 180/1 = 180 for node 9
+        # So node 9 holding 180 replicas is EXPECTED.
+        ranges = []
+        for i in range(180):
+            # Distribute replicas: 1 per AZ => pick one node from each AZ
+            az1_node = 3 if i % 2 == 0 else 8
+            az2_node = 4 if i % 2 == 0 else 7
+            ranges.append({
+                "range_id": i + 1,
+                "replicas": [az1_node, az2_node, 9],
+                "lease_holder": az1_node,
+            })
+        analyzer.sql.execute.side_effect = [
+            # _get_replication_stats
+            [{"zone_id": 0, "sub_zone_id": 0,
+              "under_replicated_ranges": 0, "over_replicated_ranges": 0,
+              "unavailable_ranges": 0, "total_ranges": 180}],
+            # _get_store_balance
+            [{"node_id": 3, "store_id": 3, "range_count": 90,
+              "lease_count": 45, "capacity": 1e12, "available": 9.9e11,
+              "used": 1e10},
+             {"node_id": 4, "store_id": 4, "range_count": 90,
+              "lease_count": 45, "capacity": 1e12, "available": 9.9e11,
+              "used": 1e10},
+             {"node_id": 7, "store_id": 7, "range_count": 90,
+              "lease_count": 45, "capacity": 1e12, "available": 9.9e11,
+              "used": 1e10},
+             {"node_id": 8, "store_id": 8, "range_count": 90,
+              "lease_count": 45, "capacity": 1e12, "available": 9.9e11,
+              "used": 1e10},
+             {"node_id": 9, "store_id": 9, "range_count": 180,
+              "lease_count": 45, "capacity": 1e12, "available": 9.9e11,
+              "used": 1e10}],
+            # _get_recent_rangelog
+            [],
+            # _get_cluster_setting (rebalance rate)
+            [{"kv.snapshot_rebalance.max_rate": "32 MiB"}],
+            # _get_cluster_setting (split qps)
+            [{"kv.range_split.load_qps_threshold": "2500"}],
+            # _get_range_max_bytes
+            [{"raw_config_sql": "range_max_bytes = 536870912"}],
+            # _get_node_localities
+            [{"node_id": 3, "locality": "region=azure,zone=az1"},
+             {"node_id": 4, "locality": "region=azure,zone=az2"},
+             {"node_id": 7, "locality": "region=azure,zone=az2"},
+             {"node_id": 8, "locality": "region=azure,zone=az1"},
+             {"node_id": 9, "locality": "region=azure,zone=az3"}],
+            # _build_az_topology -> no extra query
+            # _get_node_range_distribution: _get_valid_replica_counts
+            [{"target": "RANGE default",
+              "raw_config_sql": "num_replicas = 3"}],
+            # _get_node_range_distribution: ranges query
+            ranges,
+            # _get_node_range_distribution: gossip_nodes
+            [{"node_id": 3, "started_at": "2026-01-01"},
+             {"node_id": 4, "started_at": "2026-01-01"},
+             {"node_id": 7, "started_at": "2026-01-01"},
+             {"node_id": 8, "started_at": "2026-01-01"},
+             {"node_id": 9, "started_at": "2026-01-01"}],
+            # _get_rebalance_direction
+            [],
+        ]
+        result = analyzer.analyze(limit=10)
+        # Node 9 should NOT be flagged as OVER
+        node_dist = result["sections"][3]["rows"]
+        node9 = next(n for n in node_dist if n["node_id"] == 9)
+        assert node9["status"] == "OK", (
+            f"Node 9 (sole node in AZ3) should be OK, got {node9['status']} "
+            f"with expected={node9['expected']}, actual={node9['total_replicas']}"
+        )
+        assert result["summary"]["verdict"] == "REBALANCING COMPLETE"
+
+    def test_az_topology_section(self):
+        """AZ Topology section shows nodes per AZ."""
+        analyzer = RebalanceStatusAnalyzer(sql_client=MagicMock())
+        localities = {
+            1: {"zone": "az1"},
+            2: {"zone": "az1"},
+            3: {"zone": "az2"},
+        }
+        store_balance = [
+            {"node_id": 1, "store_id": 1, "range_count": 100,
+             "lease_count": 30},
+            {"node_id": 2, "store_id": 2, "range_count": 100,
+             "lease_count": 30},
+            {"node_id": 3, "store_id": 3, "range_count": 200,
+             "lease_count": 40},
+        ]
+        topo = analyzer._build_az_topology(localities, store_balance)
+        assert len(topo) == 2
+        az1 = next(t for t in topo if t["az"] == "az1")
+        assert az1["node_count"] == 2
+        assert az1["total_ranges"] == 200
+        az2 = next(t for t in topo if t["az"] == "az2")
+        assert az2["node_count"] == 1
+        assert az2["total_ranges"] == 200
 
 
 class TestJobStatusAnalyzer:

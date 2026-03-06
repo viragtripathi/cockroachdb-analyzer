@@ -48,11 +48,17 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
             "kv.range_split.load_qps_threshold",
         )
         range_size = self._get_range_max_bytes()
-        node_dist = self._get_node_range_distribution(threshold)
+
+        node_localities = self._get_node_localities()
+        az_topology = self._build_az_topology(node_localities, store_balance)
+        node_dist = self._get_node_range_distribution(
+            threshold, node_localities,
+        )
         rebalance_direction = self._get_rebalance_direction()
 
         verdict, reasons = self._compute_verdict(
             repl_stats, store_balance, recent_events, threshold,
+            node_localities,
         )
         if is_virtual:
             reasons.append(
@@ -76,7 +82,14 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 "rows": store_balance,
             },
             {
-                "title": "Per-Node Range Distribution",
+                "title": "AZ Topology",
+                "headers": (
+                    list(az_topology[0].keys()) if az_topology else []
+                ),
+                "rows": az_topology,
+            },
+            {
+                "title": "Per-Node Range Distribution (AZ-aware)",
                 "headers": (
                     list(node_dist[0].keys()) if node_dist else []
                 ),
@@ -189,12 +202,7 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         return valid
 
     def _compute_replication_stats(self) -> list[dict[str, Any]]:
-        """Compute replication health from crdb_internal.ranges.
-
-        Compares each range's voting_replicas count against ALL
-        configured num_replicas values across zone configs.  A range
-        is only flagged if its count does not match any configured value.
-        """
+        """Compute replication health from crdb_internal.ranges."""
         assert self.sql is not None
         try:
             valid_counts = self._get_valid_replica_counts()
@@ -261,16 +269,96 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                 logger.warning("kv_store_status query failed", exc_info=True)
             return []
 
-    def _get_node_range_distribution(
-        self, threshold: float = _BALANCE_THRESHOLD_PCT,
-    ) -> list[dict[str, Any]]:
-        """Per-node breakdown of replicas by replication factor.
+    def _get_node_localities(self) -> dict[int, dict[str, str]]:
+        """Return {node_id: {locality_key: value, ...}} for all nodes."""
+        assert self.sql is not None
+        result: dict[int, dict[str, str]] = {}
+        try:
+            rows = self.sql.execute(
+                """
+                SELECT node_id, locality
+                FROM crdb_internal.gossip_nodes
+                ORDER BY node_id
+                """
+            )
+            for r in rows:
+                nid = int(r["node_id"])
+                raw_loc = str(r.get("locality", "") or "")
+                loc: dict[str, str] = {}
+                for part in raw_loc.split(","):
+                    if "=" in part:
+                        k, v = part.split("=", 1)
+                        loc[k.strip()] = v.strip()
+                result[nid] = loc
+        except Exception as exc:
+            if _is_virtual_cluster_error(exc):
+                logger.info(
+                    "gossip_nodes not available (virtual cluster)",
+                )
+            else:
+                logger.debug("locality query failed", exc_info=True)
+        return result
 
-        Computes how many replicas each node holds for each configured
-        RF, along with expected counts, to pinpoint which nodes are
-        over/under their fair share.
+    def _get_az_for_node(
+        self, nid: int, localities: dict[int, dict[str, str]],
+    ) -> str:
+        """Extract the AZ (zone) from a node's locality, falling back
+        to region, then 'unknown'."""
+        loc = localities.get(nid, {})
+        return loc.get("zone", loc.get("region", "unknown"))
+
+    def _build_az_topology(
+        self,
+        localities: dict[int, dict[str, str]],
+        store_balance: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Build a per-AZ summary with node count, ranges, and leases."""
+        if not localities:
+            return []
+
+        az_nodes: dict[str, list[int]] = defaultdict(list)
+        for nid in localities:
+            az = self._get_az_for_node(nid, localities)
+            az_nodes[az].append(nid)
+
+        store_map: dict[int, dict[str, Any]] = {}
+        for s in store_balance:
+            store_map[int(s["node_id"])] = s
+
+        result: list[dict[str, Any]] = []
+        for az in sorted(az_nodes):
+            nodes = sorted(az_nodes[az])
+            total_ranges = sum(
+                int(store_map.get(n, {}).get("range_count", 0))
+                for n in nodes
+            )
+            total_leases = sum(
+                int(store_map.get(n, {}).get("lease_count", 0))
+                for n in nodes
+            )
+            result.append({
+                "az": az,
+                "node_count": len(nodes),
+                "node_ids": nodes,
+                "total_ranges": total_ranges,
+                "total_leases": total_leases,
+            })
+        return result
+
+    def _get_node_range_distribution(
+        self,
+        threshold: float = _BALANCE_THRESHOLD_PCT,
+        localities: dict[int, dict[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Per-node breakdown of replicas, AZ-aware expected counts.
+
+        When locality data is available, expected replicas per node
+        are computed per-AZ: each AZ gets (total_ranges * RF / num_AZs)
+        replicas, divided among the nodes in that AZ.
         """
         assert self.sql is not None
+        if localities is None:
+            localities = {}
         try:
             valid_counts = self._get_valid_replica_counts()
 
@@ -319,23 +407,43 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
                         "gossip_nodes not available (virtual cluster)"
                     )
                 else:
-                    logger.debug("gossip_nodes query failed", exc_info=True)
+                    logger.debug(
+                        "gossip_nodes query failed", exc_info=True,
+                    )
 
             all_nodes = sorted(node_total.keys())
             num_nodes = len(all_nodes)
             if num_nodes == 0:
                 return []
 
+            # Build AZ -> [node_ids] map
+            az_nodes: dict[str, list[int]] = defaultdict(list)
+            for nid in all_nodes:
+                az = self._get_az_for_node(nid, localities)
+                az_nodes[az].append(nid)
+            num_azs = len(az_nodes)
+
             result: list[dict[str, Any]] = []
             for nid in all_nodes:
+                az = self._get_az_for_node(nid, localities)
+                nodes_in_az = len(az_nodes[az])
+
                 expected = 0
                 rf_detail_parts: list[str] = []
                 for rf in sorted(valid_counts):
                     count = rf_range_count.get(rf, 0)
-                    exp_per_node = round(count * rf / num_nodes)
+                    if num_azs > 1 and rf >= num_azs:
+                        # AZ-aware: each AZ gets ~(count * rf / num_azs)
+                        # replicas, split among nodes in that AZ
+                        az_share = round(count * rf / num_azs)
+                        exp_per_node = round(az_share / nodes_in_az)
+                    else:
+                        exp_per_node = round(count * rf / num_nodes)
                     expected += exp_per_node
                     actual = node_by_rf[nid].get(rf, 0)
-                    rf_detail_parts.append(f"RF{rf}:{actual}/{exp_per_node}")
+                    rf_detail_parts.append(
+                        f"RF{rf}:{actual}/{exp_per_node}",
+                    )
 
                 actual_total = node_total[nid]
                 delta = actual_total - expected
@@ -347,6 +455,7 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
 
                 result.append({
                     "node_id": nid,
+                    "az": az,
                     "total_replicas": actual_total,
                     "expected": expected,
                     "delta": f"{delta:+d}",
@@ -484,10 +593,13 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         store_balance: list[dict[str, Any]],
         recent_events: list[dict[str, Any]],
         threshold: float = _BALANCE_THRESHOLD_PCT,
+        localities: dict[int, dict[str, str]] | None = None,
     ) -> tuple[str, list[str]]:
         """Return (verdict, reasons) based on the collected data."""
         reasons: list[str] = []
         all_clear = True
+        if localities is None:
+            localities = {}
 
         # 1. Replication stats
         total_under = sum(
@@ -524,37 +636,47 @@ class RebalanceStatusAnalyzer(BaseAnalyzer):
         else:
             reasons.append("unavailable_ranges = 0 (good)")
 
-        # 2. Store balance
-        if store_balance:
-            range_counts = [
-                int(s.get("range_count", 0)) for s in store_balance
-            ]
-            if range_counts:
-                avg_rc = sum(range_counts) / len(range_counts)
-                max_rc = max(range_counts)
-                min_rc = min(range_counts)
+        # 2. Store balance -- compare within each AZ, not globally
+        has_store_data = store_balance and "node_id" in store_balance[0]
+        if has_store_data:
+            az_stores: dict[str, list[int]] = defaultdict(list)
+            store_ranges: dict[int, int] = {}
+            for s in store_balance:
+                nid = int(s["node_id"])
+                rc = int(s.get("range_count", 0))
+                store_ranges[nid] = rc
+                az = self._get_az_for_node(nid, localities)
+                az_stores[az].append(nid)
+
+            az_issues: list[str] = []
+            for az in sorted(az_stores):
+                nodes = az_stores[az]
+                if len(nodes) < 2:
+                    continue
+                counts = [store_ranges[n] for n in nodes]
+                avg_rc = sum(counts) / len(counts)
+                max_rc = max(counts)
+                min_rc = min(counts)
                 if avg_rc > 0:
-                    spread_pct = (max_rc - min_rc) / avg_rc * 100
-                    if spread_pct > threshold:
-                        all_clear = False
-                        reasons.append(
-                            f"Range count spread {spread_pct:.1f}% "
+                    spread = (max_rc - min_rc) / avg_rc * 100
+                    if spread > threshold:
+                        az_issues.append(
+                            f"AZ {az}: spread {spread:.1f}% "
                             f"(max={max_rc}, min={min_rc}, "
-                            f"avg={avg_rc:.0f}) "
-                            f"exceeds {threshold}% threshold"
-                        )
-                    else:
-                        reasons.append(
-                            f"Range count spread {spread_pct:.1f}% "
-                            f"within {threshold}% "
-                            f"threshold (good)"
+                            f"avg={avg_rc:.0f})"
                         )
 
+            if az_issues:
+                all_clear = False
+                reasons.append(
+                    "Intra-AZ range imbalance: " + "; ".join(az_issues)
+                )
+            else:
+                reasons.append(
+                    "Range counts balanced within each AZ (good)"
+                )
+
         # 3. Rangelog activity (only within the last N minutes)
-        #    Only count remove_voter as a signal of active rebalancing.
-        #    add_voter alone (without remove_voter) indicates initial
-        #    placement or up-replication, not range movement between
-        #    nodes.  split/merge are normal background housekeeping.
         now = datetime.now(tz=timezone.utc)
         recent_adds = 0
         recent_removes = 0
