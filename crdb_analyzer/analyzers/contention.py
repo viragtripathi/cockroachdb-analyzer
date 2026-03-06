@@ -178,7 +178,7 @@ class ContentionAnalyzer(BaseAnalyzer):
     def _top_contended_statements(
         self, limit: int, since: str,
     ) -> list[dict[str, Any]]:
-        """Statements with highest mean contention time."""
+        """Statements with highest total contention impact."""
         assert self.sql is not None
         try:
             return self.sql.execute(
@@ -215,7 +215,7 @@ class ContentionAnalyzer(BaseAnalyzer):
                 WHERE (statistics -> 'execution_statistics'
                     -> 'contentionTime' ->> 'mean')::FLOAT > 0
                   AND aggregated_ts > now() - %s::INTERVAL
-                ORDER BY mean_contention_sec DESC
+                ORDER BY total_contention_sec DESC
                 LIMIT %s
                 """,
                 (since, limit),
