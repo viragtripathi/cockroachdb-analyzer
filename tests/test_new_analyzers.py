@@ -116,15 +116,76 @@ class TestClusterHealthAnalyzer:
 
 
 class TestContentionAnalyzer:
-    def test_analyze_returns_results(self):
-        sql = _make_sql_client(execute_result=[
-            {"database_name": "mydb", "table_name": "orders",
-             "index_name": "primary", "num_contention_events": 42,
-             "cumulative_contention_time": "1.5s"},
-        ])
+    def test_no_contention(self):
+        sql = _make_sql_client(execute_result=[])
         analyzer = ContentionAnalyzer(sql_client=sql)
         result = analyzer.analyze(limit=10)
-        assert "Contention" in result["title"]
+        assert result["title"] == "Contention Analysis"
+        assert result["summary"]["severity"] == "NONE"
+        assert result["summary"]["contended_stmt_fingerprints"] == 0
+        assert len(result["sections"]) == 6
+
+    def test_with_contention(self):
+        analyzer = ContentionAnalyzer(sql_client=MagicMock())
+        analyzer.sql.execute.side_effect = [
+            # _top_contended_statements
+            [{"fingerprint_id": "abc", "query": "SELECT FOR UPDATE",
+              "database": "mydb", "total_count": 100,
+              "mean_contention_sec": 0.5, "mean_latency_sec": 0.8,
+              "contention_pct_of_latency": 62.5,
+              "total_contention_sec": 50.0}],
+            # _top_contended_tables
+            [{"database_name": "mydb", "schema_name": "public",
+              "table_name": "orders",
+              "num_contention_events": 5000}],
+            # _top_contended_indexes
+            [{"database_name": "mydb", "schema_name": "public",
+              "table_name": "orders", "index_name": "orders_pkey",
+              "num_contention_events": 5000}],
+            # _contention_events_by_table
+            [{"database_name": "mydb", "table_name": "orders",
+              "index_name": "orders_pkey", "contention_type": "LOCK_WAIT",
+              "events": 5000, "total_duration": "10s",
+              "avg_duration": "0.002s", "max_duration": "0.05s",
+              "earliest": "2026-01-01", "latest": "2026-01-02"}],
+            # _recent_contention_events
+            [{"collection_ts": "2026-01-02T00:00:00Z",
+              "database_name": "mydb", "table_name": "orders",
+              "index_name": "orders_pkey",
+              "contention_type": "LOCK_WAIT",
+              "contention_duration": "0.05s",
+              "waiting_query": "SELECT FOR UPDATE"}],
+            # _contended_queries_summary
+            [{"contended_stmts": 25, "total_contention_sec": 120.5,
+              "avg_contention_sec_per_stmt": 4.82,
+              "total_executions": 5000}],
+        ]
+        result = analyzer.analyze(limit=10, since="1h")
+        assert result["summary"]["severity"] == "MODERATE"
+        assert result["summary"]["contended_stmt_fingerprints"] == 25
+        assert result["summary"]["total_contention_events"] == 5000
+        assert result["summary"]["tables_with_contention"] == 1
+        assert result["summary"]["indexes_with_contention"] == 1
+        assert len(result["sections"]) == 6
+
+    def test_high_severity(self):
+        analyzer = ContentionAnalyzer(sql_client=MagicMock())
+        analyzer.sql.execute.side_effect = [
+            [],  # top stmts
+            [],  # tables
+            [],  # indexes
+            [{"database_name": "db", "table_name": "t",
+              "index_name": "pk", "contention_type": "LOCK_WAIT",
+              "events": 15000, "total_duration": "30s",
+              "avg_duration": "0.002s", "max_duration": "1s",
+              "earliest": "2026-01-01", "latest": "2026-01-02"}],
+            [],  # recent events
+            [{"contended_stmts": 150, "total_contention_sec": 500.0,
+              "avg_contention_sec_per_stmt": 3.33,
+              "total_executions": 10000}],
+        ]
+        result = analyzer.analyze(limit=10)
+        assert result["summary"]["severity"] == "HIGH"
 
     def test_requires_sql(self):
         analyzer = ContentionAnalyzer()

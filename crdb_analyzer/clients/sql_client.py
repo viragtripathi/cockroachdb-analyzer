@@ -267,46 +267,6 @@ class CRDBSqlClient:
             (range_ids,),
         )
 
-    def get_contention_events(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Get contention data, trying multiple views for compatibility."""
-        for query in [
-            """SELECT database_name, schema_name, table_name, index_name,
-                      num_contention_events, cumulative_contention_time
-               FROM crdb_internal.cluster_contended_tables
-               ORDER BY num_contention_events DESC LIMIT %s""",
-            """SELECT database_name, schema_name, table_name, index_name,
-                      num_contention_events, cumulative_contention_time
-               FROM crdb_internal.cluster_contended_indexes
-               ORDER BY num_contention_events DESC LIMIT %s""",
-        ]:
-            try:
-                return self.execute(query, (limit,))
-            except Exception:
-                logger.debug("contention query failed, trying next", exc_info=True)
-                continue
-        return []
-
-    def get_statement_stats(self, limit: int = 50) -> list[dict[str, Any]]:
-        try:
-            return self.execute(
-                """
-                SELECT
-                    fingerprint_id,
-                    metadata ->> 'query' AS query,
-                    statistics -> 'statistics' -> 'cnt' AS exec_count,
-                    statistics -> 'statistics' -> 'runLat' ->> 'mean' AS mean_latency_s,
-                    statistics -> 'statistics' -> 'rowsRead' ->> 'mean' AS mean_rows_read,
-                    statistics -> 'statistics' -> 'bytesRead' ->> 'mean' AS mean_bytes_read
-                FROM crdb_internal.statement_statistics
-                ORDER BY (statistics -> 'statistics' -> 'runLat' ->> 'mean')::float DESC
-                LIMIT %s
-                """,
-                (limit,),
-            )
-        except Exception:
-            logger.debug("statement_statistics query failed", exc_info=True)
-            return []
-
     def get_cluster_settings(self) -> list[dict[str, Any]]:
         return self.execute("SHOW ALL CLUSTER SETTINGS")
 

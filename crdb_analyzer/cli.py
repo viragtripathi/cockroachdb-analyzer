@@ -218,18 +218,27 @@ def table_stats(
 
 
 @main.command("contention")
-@click.option("--limit", default=50)
+@click.option("--limit", default=20, help="Max rows per section.")
+@click.option(
+    "--since", default="1h",
+    help="Time window for contention stats (e.g. 1h, 6h, 24h).",
+)
 @click.option("--save", is_flag=True)
 @click.pass_context
-def contention(ctx: click.Context, limit: int, save: bool) -> None:
-    """Analyze lock contention and slow statements."""
+def contention(
+    ctx: click.Context, limit: int, since: str, save: bool,
+) -> None:
+    """Analyze lock contention: contended queries, tables, indexes,
+    and individual contention events with waiting statements."""
     config = ctx.obj["config"]
     sql_client, http_client = _build_clients(config)
     try:
         from crdb_analyzer.analyzers.contention import ContentionAnalyzer
 
-        analyzer = ContentionAnalyzer(sql_client=sql_client, http_client=http_client)
-        results = analyzer.analyze(limit=limit)
+        analyzer = ContentionAnalyzer(
+            sql_client=sql_client, http_client=http_client,
+        )
+        results = analyzer.analyze(limit=limit, since=since)
         click.echo(format_results(results, ctx.obj["format"]))
         if save:
             _save_snapshot(ctx, "contention", results)
